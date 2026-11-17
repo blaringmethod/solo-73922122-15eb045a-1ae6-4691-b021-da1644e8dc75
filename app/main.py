@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 from . import config, db, worker
+from .merge import MergeValidationError, merge_task_files
 from .worker import UploadTooLarge, start_worker, task_dir
 
 
@@ -226,6 +227,72 @@ def download_r2(task_id: str) -> FileResponse:
     return FileResponse(
         path, media_type="text/plain", filename="R2.fastq",
         headers={"Content-Length": str(path.stat().st_size)},
+    )
+
+
+class MergeOut(BaseModel):
+    task_id: str
+    merged_count: int
+    skipped_count: int
+    total_pairs: int
+    merged_fastq: str
+
+
+@app.post(
+    "/tasks/{task_id}/merge",
+    response_model=MergeOut,
+    tags=["merge"],
+    summary="Merge paired R1/R2 reads of a succeeded task into single reads",
+)
+def merge_task(task_id: str) -> MergeOut:
+    """Stitch each paired-end read into one amplicon sequence.
+
+    Reads the published R1/R2 of a **succeeded** task and validates every
+    pair in lockstep (four-line FASTQ structure, normalized read ids,
+    40-200 ACGT bases per end, Phred+33 quality, a hard 5000-pair cap). R2 is
+    reverse-complemented and the longest unique overlap (>= 20 bases,
+    <= 1 mismatch) is used; pairs with no candidate or a longest-length tie
+    are skipped. Returns the merged FASTQ in R1 order plus the merge/skip
+    counts. The published R1/R2 files are never modified, and any defect
+    fails the whole request without returning partial output.
+    """
+    conn = db.connect()
+    try:
+        row = db.get_task(conn, task_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="task not found")
+        if row["status"] != "succeeded":
+            raise HTTPException(
+                status_code=409,
+                detail=f"task is {row['status']}; results are not published",
+            )
+        rel1, rel2 = row["result_r1"], row["result_r2"]
+        if not rel1 or not rel2:
+            raise HTTPException(status_code=404, detail="result file missing")
+    finally:
+        conn.close()
+
+    base = task_dir(task_id).resolve()
+    path1 = (base / rel1).resolve()
+    path2 = (base / rel2).resolve()
+    # Server-generated relative paths; guard against traversal regardless.
+    if base not in path1.parents or base not in path2.parents:
+        raise HTTPException(status_code=404, detail="result file missing")
+    if not path1.is_file() or not path2.is_file():
+        raise HTTPException(status_code=404, detail="result file missing")
+
+    try:
+        merged_bytes, merged_count, skipped_count = merge_task_files(path1, path2)
+    except MergeValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    return MergeOut(
+        task_id=task_id,
+        merged_count=merged_count,
+        skipped_count=skipped_count,
+        total_pairs=merged_count + skipped_count,
+        # Latin-1 round-trips every FASTQ byte 1:1 without decode failures.
+        merged_fastq=merged_bytes.decode("latin-1"),
     )
 
 

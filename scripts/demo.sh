@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end demo against a running service (default http://localhost:8000).
-# Shows: upload -> progress polling -> download verification, plus cancellation
-# and a rejected (malformed) upload.
+# Shows: upload -> progress polling -> download verification, amplicon merge,
+# plus cancellation and a rejected (malformed) upload.
 set -euo pipefail
 
 BASE_URL="${BASE_URL:-http://localhost:8000}"
@@ -68,6 +68,37 @@ print("R2 ids:", ids[1])
 assert ids[0] == ids[1] == ["alpha", "beta", "gamma", "delta", "epsilon"]
 print("OK: paired in R1 order")
 PY
+
+echo "== amplicon merge on the succeeded task =="
+# Build a separate task whose 60bp mates share a 30bp overlap so the merge
+# endpoint has an admissible, unique-longest candidate to stitch.
+MR1="$WORK/merge_R1.fastq"; MR2="$WORK/merge_R2.fastq"
+python3 - "$MR1" "$MR2" <<'PY'
+import sys
+comp = bytes.maketrans(b"ACGT", b"TGCA")
+def rec(rid, seq, qual, suf):
+    return b"@" + rid.encode() + suf + b"\n" + seq + b"\n+\n" + qual + b"\n"
+# rc(R2) = C*30 + G*30 aligns after the 30 A bases of R1 -> 30bp overlap.
+r1 = rec("merge-1", b"A" * 30 + b"C" * 30, b"E" * 60, b"/1")
+r2rc = b"C" * 30 + b"G" * 30
+r2 = rec("merge-1", r2rc.translate(comp)[::-1], b"F" * 60, b"/2")
+# A second pair with unrelated random reads -> no candidate -> skipped.
+r1 += rec("merge-2", b"ACGTACGGTA" * 4, b"H" * 40, b"")
+r2 += rec("merge-2", b"TGCATGCATA" * 4, b"I" * 40, b"")
+open(sys.argv[1], "wb").write(r1)
+open(sys.argv[2], "wb").write(r2)
+PY
+MTASK=$(curl -fsS -X POST "$BASE_URL/tasks" \
+  -F "r1=@$MR1;filename=merge_R1.fastq" \
+  -F "r2=@$MR2;filename=merge_R2.fastq")
+MID=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' <<<"$MTASK")
+while :; do
+  ST=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])' \
+    < <(curl -fsS "$BASE_URL/tasks/$MID"))
+  [ "$ST" = "succeeded" ] && break
+  sleep 0.3
+done
+curl -fsS -X POST "$BASE_URL/tasks/$MID/merge" | python3 -m json.tool
 
 echo "== malformed input is rejected as a whole task =="
 printf '@x\nACGT\n+\n~~\n' > "$WORK/bad_R2.fastq"     # seq 4 != qual 2

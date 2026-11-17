@@ -41,3 +41,26 @@ STAGE_PARSE = "parse"
 STAGE_VALIDATE = "validate"
 STAGE_PUBLISH = "publish"
 STAGE_DONE = "done"
+
+# --- Amplicon merge endpoint limits (all overridable via environment) ---
+MERGE_MAX_PAIRS = int(os.environ.get("FASTQ_MERGE_MAX_PAIRS", 5000))
+"""Maximum number of R1/R2 pairs accepted by one merge request."""
+
+MERGE_MIN_READ_LEN = int(os.environ.get("FASTQ_MERGE_MIN_READ_LEN", 40))
+MERGE_MAX_READ_LEN = int(os.environ.get("FASTQ_MERGE_MAX_READ_LEN", 200))
+"""Each end must carry between 40 and 200 ACGT bases."""
+
+MERGE_MIN_OVERLAP = int(os.environ.get("FASTQ_MERGE_MIN_OVERLAP", 20))
+"""Shortest admissible R1/rc(R2) overlap, in bases."""
+
+MERGE_MAX_MISMATCHES = int(os.environ.get("FASTQ_MERGE_MAX_MISMATCHES", 1))
+"""At most one mismatch is allowed inside an accepted overlap."""
+
+MERGE_QUAL_MIN = 33
+MERGE_QUAL_MAX = 126
+"""Phred+33 quality bytes span ASCII 33 ('!') through 126 ('~')."""
+
+MERGE_MAX_LINE_BYTES = int(
+    os.environ.get("FASTQ_MERGE_MAX_LINE_BYTES", 1024 * 1024)
+)
+"""Defensive per-line cap while streaming the published FASTQ files."""

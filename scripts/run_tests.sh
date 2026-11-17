@@ -11,6 +11,10 @@ echo "=== functional + lifecycle tests ==="
 "$PY" -I tests/test_api.py
 
 echo
+echo "=== amplicon merge tests ==="
+"$PY" -I tests/test_merge.py
+
+echo
 echo "=== cancel/complete arbitration tests ==="
 "$PY" -I tests/test_cancel_race.py
 
